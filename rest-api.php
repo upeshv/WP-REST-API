@@ -15,7 +15,7 @@ add_action('rest_api_init', function () {
     register_rest_route($namespace, 'document', array(
       'methods'  => WP_REST_Server::CREATABLE,
       'callback' => 'awesome_rest_api_get_document',
-      //'permission_callback' => function() { return current_user_can( 'edit_posts' ); },
+      'permission_callback' => '__return_true', // Added a default permission callback
     ));
   }
 });
@@ -38,26 +38,25 @@ function awesome_rest_api_get_document($request)
   $status_code = 200;
   $content_body = $request->get_body();
 
-  $username_auth = esc_sql(trim($request->get_header('username')));
-  $password_auth = esc_sql(trim($request->get_header('password')));
+  // SECURE: used  sanitize_text_field for headers
+  $username_auth = sanitize_text_field(trim($request->get_header('username')));
+  $password_auth = trim($request->get_header('password'));
 
-  //check user and password authentication
-  $wpdb->get_results("SELECT * FROM " . $wpdb->prefix . "users WHERE user_login = '" . $username_auth . "' AND user_pass = '" . $password_auth . "'");
-  if ($wpdb->num_rows < 1) {
-    return 'Username or passowrd is invalid.';
+  // SECURE: Fetch user properly to check hashed password
+  $user = get_user_by('login', $username_auth);
+
+  // SECURE: Check password using WordPress native hashing check
+  if ( !$user || !wp_check_password($password_auth, $user->data->user_pass, $user->ID) ) {
+    return new WP_Error('rest_forbidden', 'Username or password is invalid.', array('status' => 403));
   }
 
-  //Get current userID from userName
-  $user = get_userdatabylogin($username_auth);
-
-  //check body exists
+  // Check body exists
   if (($content_body == null || $content_body == '') && !array_key_exists("message", $data)) {
     $data['message'] = "body is required.";
   }
 
-  //check valid json format
+  // Check valid json format
   $content_body = json_decode($content_body, true);
-  // var_dump( !array_key_exists("message", $data));
   if (($content_body == null) && !array_key_exists("message", $data)) {
     $data['message'] = "send valid json format.";
   }
@@ -76,47 +75,77 @@ function awesome_rest_api_get_document($request)
   $data['operation'] = $content_body['operation'];
   $new_custom_url = rtrim($content_body['custom_url'], '/') . '/';
 
-  $custom_url =  esc_sql(trim($new_custom_url));
-  $get_post_id = $wpdb->get_var($wpdb->prepare("SELECT `post_id` FROM wp_postmeta WHERE meta_key = 'custom_permalink' AND meta_value = %s;", $custom_url));
+  // SECURE: used $wpdb->prepare for Meta queries
+  $custom_url = trim($new_custom_url);
+  $get_post_id = $wpdb->get_var($wpdb->prepare(
+    "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = 'custom_permalink' AND meta_value = %s",
+    $custom_url
+  ));
 
-  // Get Product ID.
-  $_productId = getid(esc_sql(trim($content_body['product'])), 'product');
+  // SECURE: Sanitize product title
+  $_productId = getid(sanitize_text_field(trim($content_body['product'])), 'product');
 
-  // Get Language ID based on above Product.
-  $languages = $wpdb->get_results("SELECT ID FROM " . $wpdb->prefix . "posts WHERE post_title = '" . esc_sql(trim($content_body['language'])) . "' And post_type='language'");
+  // SECURE: used prepare for Language ID lookup
+  $language_title = sanitize_text_field(trim($content_body['language']));
+  $languages = $wpdb->get_results($wpdb->prepare(
+    "SELECT ID FROM {$wpdb->posts} WHERE post_title = %s AND post_type = 'language'",
+    $language_title
+  ));
+
   $_languageId = null;
   foreach ($languages as $language) {
-    $_language = $wpdb->get_results("SELECT * FROM " . $wpdb->prefix . "postmeta WHERE meta_key ='product_id' And post_id = '" . $language->ID . "' And meta_value='" . $_productId  . "'");
+    // SECURE: used prepare for meta check
+    $_language = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$wpdb->postmeta} WHERE meta_key ='product_id' AND post_id = %d AND meta_value = %s",
+        $language->ID,
+        $_productId
+    ));
     if (count($_language) > 0) {
       $_languageId = $language->ID;
     };
   }
 
-  // Get Framework ID based on above Language.
-  $frameworks = $wpdb->get_results("SELECT ID FROM " . $wpdb->prefix . "posts WHERE post_title = '" . esc_sql(trim($content_body['framework'])) . "' And post_type='framework'");
+  // SECURE: used prepare for Framework ID lookup
+  $framework_title = sanitize_text_field(trim($content_body['framework']));
+  $frameworks = $wpdb->get_results($wpdb->prepare(
+    "SELECT ID FROM {$wpdb->posts} WHERE post_title = %s AND post_type = 'framework'",
+    $framework_title
+  ));
+  
   $_frameworkID = null;
   foreach ($frameworks as $framework) {
-    $_framework = $wpdb->get_results("SELECT * FROM " . $wpdb->prefix . "postmeta WHERE meta_key ='language_id' And post_id = '" . $framework->ID . "' And meta_value='" . $_languageId  . "'");
+    $_framework = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$wpdb->postmeta} WHERE meta_key ='language_id' AND post_id = %d AND meta_value = %d",
+        $framework->ID,
+        $_languageId
+    ));
     if (count($_framework) > 0) {
       $_frameworkID = $framework->ID;
     };
   }
 
-  // Get Section ID based on above Framework.
-  $sections = $wpdb->get_results("SELECT ID FROM " . $wpdb->prefix . "posts WHERE post_title = '" . esc_sql(trim($content_body['section'])) . "' And post_type='section'");
+  // SECURE: used prepare for Section ID lookup
+  $section_title = sanitize_text_field(trim($content_body['section']));
+  $sections = $wpdb->get_results($wpdb->prepare(
+    "SELECT ID FROM {$wpdb->posts} WHERE post_title = %s AND post_type = 'section'",
+    $section_title
+  ));
+  
   $_sectionID = null;
   foreach ($sections as $section) {
-    $_section = $wpdb->get_results("SELECT * FROM " . $wpdb->prefix . "postmeta WHERE meta_key ='framework_id' And post_id = '" . $section->ID . "' And meta_value='" . $_frameworkID  . "'");
+    $_section = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$wpdb->postmeta} WHERE meta_key ='framework_id' AND post_id = %d AND meta_value = %d",
+        $section->ID,
+        $_frameworkID
+    ));
     if (count($_section) > 0) {
       $_sectionID = $section->ID;
     };
   }
 
-  //update Docs
+  // update Docs
   if ($content_body['operation'] == "update" && !array_key_exists("message", $data)) {
-
     if ($get_post_id != null && !array_key_exists("message", $data)) {
-
       $arr = array();
       if (get_post_meta($get_post_id, 'product_id', true) != $_productId) {
         $arr[] = "product mismatch.";
@@ -131,16 +160,21 @@ function awesome_rest_api_get_document($request)
         $arr[] = "section mismatch.";
       }
 
-      //if error not found.
       if (count($arr) == 0) {
           $rid = _wp_put_post_revision($get_post_id);
 
-          $wpdb->get_var("INSERT INTO wp_postmeta (post_id, meta_key, meta_value) VALUES ('" . $rid . "', 'document_remarks', '" . (esc_sql(trim($content_body['document_remarks'])) ?: '') . "');");
+          // SECURE: Prepare for custom meta insert
+          $doc_remarks = sanitize_textarea_field(trim($content_body['document_remarks'] ?? ''));
+          $wpdb->query($wpdb->prepare(
+            "INSERT INTO {$wpdb->postmeta} (post_id, meta_key, meta_value) VALUES (%d, 'document_remarks', %s)",
+            $rid,
+            $doc_remarks
+          ));
 
           if ($rid) {
             $document_post = array(
               'ID'           => $rid,
-              'post_content'   => $content_body['content'],
+              'post_content' => wp_kses_post($content_body['content']), // SECURE: Allow safe HTML
               'post_author'  => $user->ID
             );
             wp_update_post($document_post);
@@ -157,43 +191,37 @@ function awesome_rest_api_get_document($request)
     }
   } else if ($content_body['operation'] == "create" && !array_key_exists("message", $data)) {
       if ($get_post_id == null && !array_key_exists("message", $data)) {
-
         $arr = array();
-        if (!$_productId) {
-          $arr[] = "product mismatch.";
-        }
-        if (!$_languageId) {
-          $arr[] = "language mismatch.";
-        }
-        if (!$_frameworkID) {
-          $arr[] = "framework mismatch.";
-        }
-        if (!$_sectionID) {
-          $arr[] = "section mismatch.";
-        }
+        if (!$_productId) { $arr[] = "product mismatch."; }
+        if (!$_languageId) { $arr[] = "language mismatch."; }
+        if (!$_frameworkID) { $arr[] = "framework mismatch."; }
+        if (!$_sectionID) { $arr[] = "section mismatch."; }
 
         if (count($arr) == 0) {
           $document_post = array(
-            'post_content'   => $content_body['content'],
-            'post_title' => $content_body['title'],
-            'post_name' => sanitize_title($content_body['title']).time(),
-            'post_status' => 'draft',
-            'post_type' => 'doc',
+            'post_content' => wp_kses_post($content_body['content']), // SECURE: Allow safe HTML
+            'post_title'   => sanitize_text_field($content_body['title']),
+            'post_name'    => sanitize_title($content_body['title']).time(),
+            'post_status'  => 'draft',
+            'post_type'    => 'doc',
             'post_author'  => $user->ID
           );
 
           $new_post_id = wp_insert_post($document_post);
-          $document_guid = generateGUID();
+          
+        
+          if (function_exists('generateGUID')) {
+             $document_guid = generateGUID();
+             add_post_meta($new_post_id, 'doc_guid', $document_guid);
+          }
 
           add_post_meta($new_post_id, 'product_id', $_productId);
           add_post_meta($new_post_id, 'language_id', $_languageId);
           add_post_meta($new_post_id, 'framework_id', $_frameworkID);
           add_post_meta($new_post_id, 'section_id', $_sectionID);
-          add_post_meta($new_post_id, 'custom_permalink', $new_custom_url);
-
-          //Below fields are also mandatory to setup docs field.
-          add_post_meta($new_post_id, 'doc_guid', $document_guid);
+          add_post_meta($new_post_id, 'custom_permalink', sanitize_text_field($new_custom_url));
           add_post_meta($new_post_id, 'document_enable_feedback', 'on');
+
           $data['status'] = true;
           $data['message'] = "New Docs created successfully, Doc ID =>. $new_post_id";
         } else {
